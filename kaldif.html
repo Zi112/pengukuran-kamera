@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pengukuran panjang</title>
+  <style>
+    :root{--bg:#0b1220;--panel:#0f1720;--accent:#1dd1a1;--muted:#9aa4b2}
+    html,body{height:100%;margin:0;font-family:Segoe UI, Roboto, Arial;background:var(--bg);color:#eef}
+    .app{height:100vh;display:flex;flex-direction:column}
+    .view{position:relative;flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    video#cam{width:100%;height:100%;object-fit:cover}
+    canvas#overlay{position:absolute;left:0;top:0;width:100%;height:100%}
+
+    .topbar{position:absolute;left:12px;right:12px;top:12px;display:flex;justify-content:space-between;align-items:center;z-index:20}
+    .brand{background:rgba(2,6,23,0.6);padding:8px 12px;border-radius:10px;font-weight:700}
+    .controls{background:rgba(2,6,23,0.6);padding:8px;border-radius:10px;display:flex;gap:8px;align-items:center}
+    .btn{background:transparent;border:1px solid rgba(255,255,255,0.06);color:#eef;padding:8px 10px;border-radius:8px;cursor:pointer}
+    .btn.active{border-color:var(--accent);box-shadow:0 0 8px rgba(29,209,161,0.12)}
+
+    .panel{position:absolute;left:12px;bottom:12px;right:12px;z-index:20;background:linear-gradient(180deg, rgba(2,6,23,0.2), rgba(2,6,23,0.6));backdrop-filter:blur(6px);padding:12px;border-radius:12px;display:flex;align-items:center;gap:12px}
+    .panel .left{display:flex;flex-direction:column;gap:6px}
+    .panel .right{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end}
+    select,input{background:transparent;border:1px solid rgba(255,255,255,0.06);color:#eef;padding:8px;border-radius:8px}
+    .result{font-weight:700;color:var(--accent);font-size:18px}
+    .hint{font-size:13px;color:var(--muted)}
+
+    /* ruler styling (drawn on canvas) */
+    @media (max-width:700px){ .brand{font-size:14px} .result{font-size:16px} }
+    /* central shutter button for Move Measure mode */
+    .shutter-wrap{position:absolute;left:50%;transform:translateX(-50%);bottom:26px;z-index:35}
+    .shutter{width:78px;height:78px;border-radius:50%;background:rgba(255,255,255,0.12);border:4px solid rgba(255,255,255,0.18);display:flex;align-items:center;justify-content:center;cursor:pointer}
+    .shutter.active{border-color:rgba(29,209,161,0.95);background:rgba(29,209,161,0.12)}
+    .crosshair{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:36px;height:36px;pointer-events:none;z-index:30}
+    .crosshair svg{width:100%;height:100%}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="view">
+      <video id="cam" autoplay playsinline></video>
+      <canvas id="overlay"></canvas>
+
+      <div class="topbar">
+        <div class="brand">Pngukuran Panjang menggunakan Kamera AR</div>
+        <div class="controls">
+          <button id="calBtn" class="btn">Kalibrasi</button>
+          <button id="measureBtn" class="btn">Ukur</button>
+          <button id="moveMeasureBtn" class="btn">Move Measure</button>
+          <button id="arMeasureBtn" class="btn">AR Measure</button>
+          <button id="autoDetectBtn" class="btn">Auto</button>
+          <button id="screenshotBtn" class="btn">Screenshot</button>
+          <button id="camToggleBtn" class="btn">Camera: Rear</button>
+          <button id="clearBtn" class="btn">Reset</button>
+          <label class="hint" style="margin-left:8px">Satuan:
+            <select id="unitSel">
+              <option value="cm">cm</option>
+              <option value="m">m</option>
+              <option value="in">in</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="left">
+          <div class="hint">Kalibrasi: letakkan penggaris atau objek referensi, klik dua titik ujung, masukkan panjang nyata lalu tekan <strong>Terapkan</strong>.</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="refLen" type="number" step="0.01" placeholder="Panjang referensi" style="width:120px" value="30">
+            <select id="refUnit"><option value="cm">cm</option><option value="m">m</option><option value="in">in</option></select>
+            <button id="applyCal" class="btn">Terapkan</button>
+            <button id="saveCalBtn" class="btn">Simpan Kalibrasi</button>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <button id="saveMeasureBtn" class="btn" style="background:var(--accent);color:#042;">Simpan Pengukuran</button>
+            <button id="showGuideBtn" class="btn">Panduan</button>
+          </div>
+        </div>
+
+        <div class="right">
+          <div class="result" id="resultText">Belum ada pengukuran</div>
+          <div class="hint" id="scaleText">Skala: - px/unit</div>
+          <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+            <button id="exportCsv" class="btn">Ekspor CSV</button>
+            <button id="clearHistory" class="btn">Hapus Riwayat</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="historyPanel" style="position:absolute;right:12px;top:72px;z-index:30;max-width:320px;background:rgba(2,6,23,0.7);padding:10px;border-radius:10px;color:#eef;display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><strong>Riwayat Pengukuran</strong><button id="closeHistory" class="btn">×</button></div>
+        <div id="historyList" style="max-height:320px;overflow:auto"></div>
+      </div>
+
+      <div id="guideOverlay" style="position:absolute;inset:0;z-index:40;background:rgba(0,0,0,0.7);color:#fff;display:none;padding:18px;overflow:auto">
+        <button id="closeGuide" class="btn" style="position:absolute;right:18px;top:18px">Tutup</button>
+        <h2>Panduan Singkat</h2>
+        <ol>
+          <li>Tekan <strong>Kalibrasi</strong>, lalu tap dua titik di ujung objek referensi (mis. penggaris).</li>
+          <li>Masukkan panjang nyata pada kotak <em>Panjang referensi</em> dan pilih satuan.
+            Tekan <strong>Terapkan</strong> lalu <strong>Simpan Kalibrasi</strong> jika ingin menyimpan pengaturan.</li>
+          <li>Tekan <strong>Ukur</strong>, tap/seret dua titik pada objek yang ingin diukur. Hasil akan ditampilkan di panel.</li>
+          <li>Untuk menyimpan hasil pengukuran, tekan <strong>Simpan Pengukuran</strong>. Lihat riwayat di pojok kanan atas.</li>
+        </ol>
+        <p class="hint">Catatan: ini demo sederhana — akurasi terbaik jika kamera sejajar dengan objek dan pengkalibrasian dilakukan dekat area pengukuran.</p>
+      </div>
+      <!-- central shutter and crosshair for Move Measure -->
+      <div class="shutter-wrap" id="shutterWrap" style="display:none">
+        <div id="shutter" class="shutter" title="Tap to capture center point"></div>
+      </div>
+      <div class="crosshair" id="crosshair" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="rgba(29,209,161,0.95)" stroke-width="2"><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+
+      <!-- AR overlay controls (for WebXR measurement) -->
+      <div id="arPanel" style="position:absolute;left:50%;transform:translateX(-50%);top:12px;z-index:60;display:none;gap:8px;align-items:center">
+        <button id="setStartBtn" class="btn">Set Start</button>
+        <button id="setEndBtn" class="btn">Set End</button>
+        <button id="endArBtn" class="btn">End AR</button>
+        <div id="arResult" style="color:var(--accent);font-weight:700;margin-left:8px">AR: -</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Elements
+    const video = document.getElementById('cam');
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d');
+    const calBtn = document.getElementById('calBtn');
+    const measureBtn = document.getElementById('measureBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const refLenInput = document.getElementById('refLen');
+    const refUnit = document.getElementById('refUnit');
+    const applyCal = document.getElementById('applyCal');
+    const unitSel = document.getElementById('unitSel');
+    const resultText = document.getElementById('resultText');
+    const scaleText = document.getElementById('scaleText');
+
+    let DPR = window.devicePixelRatio || 1;
+    let mode = null; // 'cal' | 'measure' | null
+    let handles = []; // draggable points [{x,y,drag}]
+    let pxPerUnit = null; // pixels per selected unit (e.g., px/cm)
+    let unit = 'cm';
+    let facingMode = 'environment'; // 'environment' (rear) or 'user' (front)
+
+    unitSel.addEventListener('change', ()=>{ unit = unitSel.value; updateResult(); });
+
+    // Start camera (respecting facingMode)
+    async function startCamera(){
+      try{
+        stopCameraStream();
+        const constraints = { video: { facingMode: facingMode }, audio: false };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        await video.play();
+        resize();
+        requestAnimationFrame(loop);
+      }catch(e){ alert('Gagal akses kamera: '+e.message); }
+    }
+
+    function stopCameraStream(){
+      try{
+        const s = video.srcObject;
+        if(s && s.getTracks){ s.getTracks().forEach(t=>t.stop()); }
+      }catch(e){ /* ignore */ }
+      video.srcObject = null;
+    }
+
+    function resize(){
+      const w = video.clientWidth; const h = video.clientHeight;
+      canvas.width = Math.floor(w * DPR); canvas.height = Math.floor(h * DPR);
+      canvas.style.width = w+'px'; canvas.style.height = h+'px';
+      ctx.setTransform(DPR,0,0,DPR,0,0);
+    }
+    window.addEventListener('resize', resize);
+
+    // Input handling (mouse + touch)
+    let activeHandle = null;
+    function getPos(e){
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return {x: clientX - rect.left, y: clientY - rect.top};
+    }
+
+    canvas.addEventListener('pointerdown', (ev)=>{
+      const p = getPos(ev);
+      // find nearest handle
+      let minD = 30; let nearest = null;
+      for(const h of handles){ const d = Math.hypot(h.x-p.x, h.y-p.y); if(d<minD){ minD=d; nearest=h; }}
+      if(nearest){ nearest.drag = true; activeHandle = nearest; }
+      else{
+        if(mode==='cal' || mode==='measure'){
+          if(handles.length<2){ handles.push({x:p.x,y:p.y,drag:true}); activeHandle = handles[handles.length-1]; }
+        }
+      }
+    });
+    window.addEventListener('pointermove', (ev)=>{ if(!activeHandle) return; const p=getPos(ev); activeHandle.x=p.x; activeHandle.y=p.y; ev.preventDefault(); updateResult(); });
+    window.addEventListener('pointerup', ()=>{ if(activeHandle) activeHandle.drag=false; activeHandle=null; });
+
+    calBtn.addEventListener('click', ()=>{ setMode('cal'); });
+    measureBtn.addEventListener('click', ()=>{ setMode('measure'); });
+    clearBtn.addEventListener('click', ()=>{ handles=[]; pxPerUnit=null; scaleText.textContent='Skala: - px/unit'; resultText.textContent='Belum ada pengukuran'; });
+    applyCal.addEventListener('click', ()=>{ applyCalibration(); });
+
+    function setMode(m){ mode = m; calBtn.classList.toggle('active', m==='cal'); measureBtn.classList.toggle('active', m==='measure'); resultText.textContent = (m==='cal')? 'Mode Kalibrasi: tambahkan 2 titik.' : 'Mode Ukur: tambahkan 2 titik.'; }
+
+    function applyCalibration(){
+      if(handles.length<2){ alert('Pilih dua titik pada referensi untuk kalibrasi.'); return; }
+      const refV = parseFloat(refLenInput.value);
+      if(!isFinite(refV) || refV<=0){ alert('Masukkan nilai panjang referensi yang valid.'); return; }
+      // convert ref unit to selected unit (we'll store px per chosen 'unit')
+      const refUnitVal = refUnit.value; // 'cm'/'m'/'in'
+      const refInSelected = convertUnits(refV, refUnitVal, unit); // value in selected unit
+      const dpx = euclid(handles[0], handles[1]);
+      pxPerUnit = dpx / refInSelected; // px per (selected unit)
+      scaleText.textContent = 'Skala: '+pxPerUnit.toFixed(3)+' px/'+unit;
+      resultText.textContent = 'Kalibrasi selesai';
+    }
+
+    // --- Persistence: save/load calibration and measurements ---
+    const STORAGE_KEY_CAL = 'kaldif_calibration';
+    const STORAGE_KEY_MEAS = 'kaldif_measurements';
+
+    function saveCalibrationToStorage(){
+      if(!pxPerUnit) return alert('Belum ada kalibrasi untuk disimpan.');
+      const data = {pxPerUnit, unit};
+      localStorage.setItem(STORAGE_KEY_CAL, JSON.stringify(data));
+      alert('Kalibrasi disimpan.');
+    }
+
+    function loadCalibrationFromStorage(){
+      try{
+        const raw = localStorage.getItem(STORAGE_KEY_CAL);
+        if(!raw) return;
+        const obj = JSON.parse(raw);
+        pxPerUnit = obj.pxPerUnit; unit = obj.unit || unit;
+        unitSel.value = unit;
+        scaleText.textContent = 'Skala: '+pxPerUnit.toFixed(3)+' px/'+unit;
+        resultText.textContent = 'Kalibrasi dimuat dari penyimpanan.';
+      }catch(e){ console.warn('Load cal failed',e); }
+    }
+
+    function saveMeasurementRecord(rec){
+      const raw = localStorage.getItem(STORAGE_KEY_MEAS); let arr = raw?JSON.parse(raw):[];
+      arr.unshift(rec); // latest first
+      localStorage.setItem(STORAGE_KEY_MEAS, JSON.stringify(arr));
+      renderHistory();
+    }
+
+    function loadMeasurements(){
+      const raw = localStorage.getItem(STORAGE_KEY_MEAS); return raw?JSON.parse(raw):[];
+    }
+
+    function clearMeasurements(){ localStorage.removeItem(STORAGE_KEY_MEAS); renderHistory(); }
+
+    function exportMeasurementsCSV(){ const arr = loadMeasurements(); if(!arr.length){ alert('Tidak ada data untuk diekspor'); return; }
+      const lines = ['timestamp,unit,value,px'];
+      for(const r of arr){ lines.push([r.ts, r.unit, r.value, r.px].join(',')); }
+      const csv = lines.join('\n');
+      const blob = new Blob([csv], {type:'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'kaldif_measurements.csv'; a.click(); URL.revokeObjectURL(url);
+    }
+
+    function renderHistory(){ const container = document.getElementById('historyList'); container.innerHTML=''; const arr = loadMeasurements(); if(!arr.length){ container.innerHTML='<div class="hint">Belum ada pengukuran</div>'; return; }
+      for(const r of arr){ const d = document.createElement('div'); d.style.padding='6px'; d.style.borderBottom='1px solid rgba(255,255,255,0.04)'; d.innerHTML = `<div style="display:flex;justify-content:space-between"><div><div>${new Date(r.ts).toLocaleString()}</div><div style="font-weight:700">${r.value} ${r.unit}</div></div><div style="text-align:right"><div>${r.px.toFixed(1)} px</div><button data-ts="${r.ts}" class="btn small">Hapus</button></div></div>`; container.appendChild(d);
+      }
+      // attach delete handlers
+      container.querySelectorAll('button[data-ts]').forEach(b=>b.addEventListener('click', ()=>{ const ts=b.getAttribute('data-ts'); let arr=loadMeasurements(); arr = arr.filter(x=>String(x.ts)!==String(ts)); localStorage.setItem(STORAGE_KEY_MEAS, JSON.stringify(arr)); renderHistory(); }));
+    }
+
+    // wire storage buttons
+    document.getElementById('saveCalBtn').addEventListener('click', saveCalibrationToStorage);
+    document.getElementById('saveMeasureBtn').addEventListener('click', ()=>{
+      if(handles.length<2) return alert('Buat pengukuran terlebih dahulu (2 titik).');
+      const dpx = euclid(handles[0], handles[1]);
+      if(!pxPerUnit) return alert('Kalibrasi diperlukan sebelum menyimpan pengukuran.');
+      const val = +(dpx/pxPerUnit).toFixed(3);
+      const rec = {ts: Date.now(), unit, value: val, px: +(dpx.toFixed(1))};
+      saveMeasurementRecord(rec);
+      alert('Pengukuran disimpan.');
+    });
+    document.getElementById('exportCsv').addEventListener('click', exportMeasurementsCSV);
+    document.getElementById('clearHistory').addEventListener('click', ()=>{ if(confirm('Hapus semua riwayat?')){ clearMeasurements(); }});
+    document.getElementById('showGuideBtn').addEventListener('click', ()=>{ document.getElementById('guideOverlay').style.display='block'; });
+    document.getElementById('closeGuide').addEventListener('click', ()=>{ document.getElementById('guideOverlay').style.display='none'; });
+    document.getElementById('closeHistory').addEventListener('click', ()=>{ document.getElementById('historyPanel').style.display='none'; });
+
+    // show history on click of header brand (quick access)
+    document.querySelector('.brand').addEventListener('click', ()=>{ const hp = document.getElementById('historyPanel'); hp.style.display = hp.style.display==='block'?'none':'block'; renderHistory(); });
+
+    // load saved calibration and history on start
+    loadCalibrationFromStorage(); renderHistory();
+
+    // camera toggle wiring
+    const camToggleBtn = document.getElementById('camToggleBtn');
+    camToggleBtn.addEventListener('click', ()=>{
+      facingMode = (facingMode === 'environment') ? 'user' : 'environment';
+      camToggleBtn.textContent = 'Camera: ' + (facingMode==='environment' ? 'Rear' : 'Front');
+      startCamera();
+    });
+
+    // --- Auto-detect and Screenshot features ---
+    document.getElementById('autoDetectBtn').addEventListener('click', autoDetectHandles);
+    document.getElementById('screenshotBtn').addEventListener('click', takeScreenshot);
+
+    // --- Move Measure (press shutter & move device) ---
+    const moveBtn = document.getElementById('moveMeasureBtn');
+    const shutterWrapEl = document.getElementById('shutterWrap');
+    const shutterEl = document.getElementById('shutter');
+    const crosshairEl = document.getElementById('crosshair');
+    let moveMode = false;
+    let moveState = 0; // 0 = awaiting first press, 1 = first captured
+
+    moveBtn.addEventListener('click', ()=>{
+      moveMode = !moveMode;
+      moveBtn.classList.toggle('active', moveMode);
+      shutterWrapEl.style.display = moveMode ? 'block' : 'none';
+      crosshairEl.style.display = moveMode ? 'block' : 'none';
+      // reset move state when enabling
+      if(moveMode){ moveState = 0; shutterEl.classList.remove('active'); setMode('measure'); resultText.textContent='Move Measure: tekan tombol untuk menetapkan titik 1.'; }
+      else { moveState = 0; shutterEl.classList.remove('active'); }
+    });
+
+    // Press-and-hold measurement: while holding shutter, endpoint follows center
+    let measuring = false;
+    function getCenterCoords(){ const rect = canvas.getBoundingClientRect(); return { x: rect.width/2, y: rect.height/2 }; }
+
+    shutterEl.addEventListener('pointerdown', (ev)=>{
+      ev.preventDefault();
+      if(!moveMode) return;
+      // set start point at center
+      const c = getCenterCoords();
+      handles[0] = { x: c.x, y: c.y, drag: false };
+      handles[1] = { x: c.x, y: c.y, drag: false };
+      measuring = true;
+      shutterEl.classList.add('active');
+      resultText.textContent = 'Measuring... tahan lalu lepaskan untuk menyelesaikan pengukuran.';
+      // optional vibration feedback
+      if(navigator.vibrate) navigator.vibrate(30);
+    });
+
+    shutterEl.addEventListener('pointerup', (ev)=>{
+      ev.preventDefault();
+      if(!moveMode || !measuring) return;
+      measuring = false;
+      shutterEl.classList.remove('active');
+      // finalize current center as endpoint
+      const c = getCenterCoords();
+      handles[1] = { x: c.x, y: c.y, drag: false };
+      updateResult();
+      resultText.textContent = 'Pengukuran selesai.';
+      if(navigator.vibrate) navigator.vibrate([20,50,20]);
+    });
+
+    shutterEl.addEventListener('pointercancel', ()=>{ if(measuring){ measuring=false; shutterEl.classList.remove('active'); resultText.textContent='Pengukuran dibatalkan.'; } });
+    
+    // --- WebXR AR measurement ---
+    const arBtn = document.getElementById('arMeasureBtn');
+    const arPanel = document.getElementById('arPanel');
+    const setStartBtn = document.getElementById('setStartBtn');
+    const setEndBtn = document.getElementById('setEndBtn');
+    const endArBtn = document.getElementById('endArBtn');
+    const arResult = document.getElementById('arResult');
+
+    let xrSession = null;
+    let xrRefSpace = null;
+    let lastXRFrame = null;
+    let arStartPos = null;
+    let arEndPos = null;
+    let lastViewerPos = null;
+
+    function distance3D(a,b){ const dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z; return Math.sqrt(dx*dx + dy*dy + dz*dz); }
+
+    async function startAR(){
+      if(!navigator.xr || !navigator.xr.requestSession){ alert('WebXR tidak tersedia di browser ini.'); return; }
+      try{
+        const supported = await navigator.xr.isSessionSupported('immersive-ar');
+        if(!supported){ alert('Perangkat tidak mendukung AR (immersive-ar).'); return; }
+        xrSession = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['local-floor'] });
+        const gl = canvas.getContext('webgl', { xrCompatible: true });
+        await (gl.makeXRCompatible ? gl.makeXRCompatible() : Promise.resolve());
+        xrSession.updateRenderState({ baseLayer: new XRWebGLLayer(xrSession, gl) });
+        xrRefSpace = await xrSession.requestReferenceSpace('local-floor');
+        xrSession.requestAnimationFrame(onXRFrame);
+        arPanel.style.display = 'flex'; arBtn.classList.add('active');
+        video.style.display = 'none'; canvas.style.display = 'block';
+      }catch(e){ alert('Gagal memulai AR: '+e.message); }
+    }
+
+    function endAR(){ if(xrSession){ xrSession.end(); xrSession=null; } arPanel.style.display='none'; arBtn.classList.remove('active'); video.style.display='block'; canvas.style.display='block'; arStartPos=arEndPos=null; arResult.textContent='AR: -'; startCamera(); }
+
+    function onXRFrame(time, frame){ lastXRFrame = frame; const session = frame.session; session.requestAnimationFrame(onXRFrame); const pose = frame.getViewerPose(xrRefSpace); if(!pose) return; const p = pose.transform.position; lastViewerPos = {x: p.x, y: p.y, z: p.z}; }
+
+    arBtn.addEventListener('click', ()=>{ if(xrSession) endAR(); else startAR(); });
+
+    setStartBtn.addEventListener('click', ()=>{ if(!lastViewerPos) return alert('Posisi belum tersedia. Arahkan perangkat dan tunggu.'); arStartPos = {...lastViewerPos}; arResult.textContent='AR: Titik 1 disimpan'; });
+    setEndBtn.addEventListener('click', ()=>{ if(!lastViewerPos) return alert('Posisi belum tersedia. Arahkan perangkat dan tunggu.'); arEndPos = {...lastViewerPos}; if(arStartPos){ const d = distance3D(arStartPos, arEndPos); showArDistance(d); } else arResult.textContent='AR: Titik 2 disimpan (tetapkan titik 1 dulu)'; });
+    endArBtn.addEventListener('click', endAR);
+
+    function showArDistance(meters){ const cm = meters*100; const inch = meters/0.0254; arResult.textContent = `AR: ${meters.toFixed(3)} m | ${cm.toFixed(1)} cm | ${inch.toFixed(2)} in`; }
+
+    
+    // Auto-detect: simple vertical-edge detector near center
+    async function autoDetectHandles(){
+      // capture current video frame
+      const temp = document.createElement('canvas');
+      const w = video.videoWidth; const h = video.videoHeight;
+      if(!w || !h){ alert('Frame belum siap, coba lagi.'); return; }
+      temp.width = w; temp.height = h; const tctx = temp.getContext('2d');
+      tctx.drawImage(video, 0, 0, w, h);
+      const img = tctx.getImageData(0,0,w,h);
+      // convert to grayscale and compute vertical gradient (simple Sobel-like)
+      const gray = new Float32Array(w*h);
+      for(let i=0;i<w*h;i++){ const r = img.data[i*4], g=img.data[i*4+1], b=img.data[i*4+2]; gray[i]=0.2989*r + 0.5870*g + 0.1140*b; }
+      // vertical gradient kernel [-1,0,1] horizontally
+      const grad = new Float32Array(w*h);
+      for(let y=0;y<h;y++){
+        for(let x=1;x<w-1;x++){
+          const idx = y*w + x;
+          grad[idx] = Math.abs(gray[idx+1] - gray[idx-1]);
+        }
+      }
+      // focus search near center column +/- 15% width
+      const cx = Math.floor(w/2), range = Math.floor(w*0.15);
+      // sum gradient vertically per column
+      let bestCol = cx; let bestVal = -1;
+      for(let col=cx-range; col<=cx+range; col++){
+        let sum = 0;
+        for(let y=0;y<h;y++){ sum += grad[y*w + col]; }
+        if(sum>bestVal){ bestVal=sum; bestCol=col; }
+      }
+      // find topmost and bottommost strong edges in that column
+      // threshold as fraction of max grad in column
+      let maxG=0; for(let y=0;y<h;y++){ maxG = Math.max(maxG, grad[y*w + bestCol]); }
+      const thresh = Math.max(8, maxG*0.25);
+      let top = null, bottom = null;
+      for(let y=0;y<h;y++){ if(grad[y*w + bestCol] >= thresh){ top = y; break; } }
+      for(let y=h-1;y>=0;y--){ if(grad[y*w + bestCol] >= thresh){ bottom = y; break; } }
+      if(top===null || bottom===null || bottom-top < 6){ alert('Auto-detect gagal, coba posisi kamera lebih stabil atau gunakan kalibrasi manual.'); return; }
+      // map to canvas coords (video may be scaled to fit canvas)
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = rect.width / w; const scaleY = rect.height / h; const scale = (scaleX+scaleY)/2;
+      const cxCanvas = (bestCol * rect.width / w);
+      const topC = top * rect.height / h; const botC = bottom * rect.height / h;
+      // set handles
+      handles = [{x:cxCanvas, y:topC, drag:false}, {x:cxCanvas, y:botC, drag:false}];
+      updateResult();
+      document.getElementById('historyPanel').style.display='block';
+    }
+
+    // Screenshot: capture video + overlay and download image
+    function takeScreenshot(){
+      const out = document.createElement('canvas');
+      const w = video.videoWidth || canvas.clientWidth; const h = video.videoHeight || canvas.clientHeight;
+      out.width = w; out.height = h; const octx = out.getContext('2d');
+      // draw video scaled to out
+      octx.drawImage(video, 0, 0, w, h);
+      // draw overlay elements scaled
+      // scale factor between canvas (display) and video pixels
+      const rect = canvas.getBoundingClientRect();
+      const sx = w / rect.width; const sy = h / rect.height;
+      // draw handles and line
+      octx.strokeStyle = 'rgba(29,209,161,0.95)'; octx.fillStyle='rgba(29,209,161,0.95)'; octx.lineWidth = 4;
+      if(handles.length>0){
+        if(handles.length===2){ octx.beginPath(); octx.moveTo(handles[0].x*sx, handles[0].y*sy); octx.lineTo(handles[1].x*sx, handles[1].y*sy); octx.stroke(); }
+        handles.forEach((p)=>{ octx.beginPath(); octx.arc(p.x*sx, p.y*sy, 16,0,Math.PI*2); octx.fill(); });
+      }
+      // add text
+      octx.fillStyle='white'; octx.font = Math.max(20, Math.floor(w/40))+'px sans-serif'; octx.fillText(resultText.textContent || '', 16, 32);
+      out.toBlob((blob)=>{ const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download = 'kaldif_screenshot.png'; a.click(); URL.revokeObjectURL(url); });
+    }
+
+    function convertUnits(v, from, to){
+      // normalize to meters then to target
+      const toM = {cm: v => v/100, m: v => v, in: v => v*0.0254}[from](v);
+      const fromM = {cm: v => v*100, m: v => v, in: v => v/0.0254}[to];
+      return fromM ? fromM(toM) : toM;
+    }
+
+    function euclid(a,b){ const dx=b.x-a.x; const dy=b.y-a.y; return Math.sqrt(dx*dx+dy*dy); }
+
+    function updateResult(){
+      if(handles.length<2){ return; }
+      const dpx = euclid(handles[0], handles[1]);
+      if(pxPerUnit){
+        const val = dpx / pxPerUnit; // in selected unit
+        let display = val;
+        if(unit==='m'){ display = val.toFixed(3); }
+        else if(unit==='cm'){ display = (val).toFixed(2); }
+        else if(unit==='in'){ display = (val).toFixed(2); }
+        resultText.textContent = display + ' ' + unit + ' ('+dpx.toFixed(1)+' px)';
+      }else{
+        resultText.textContent = dpx.toFixed(1)+' px (kalibrasi diperlukan)';
+      }
+    }
+
+    // main draw loop
+    function loop(){
+      resizeIfNeeded();
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+
+      // NOTE: penggaris tengah dihapus atas permintaan (tidak digambar lagi)
+
+      // draw handles and connecting line
+      // if measuring (press-and-hold), update second handle to follow center
+      if(measuring && moveMode && handles.length>0){ const c = getCenterCoords(); handles[1] = { x: c.x, y: c.y, drag: false }; updateResult(); }
+      if(handles.length>0){
+        ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.fillStyle='rgba(29,209,161,0.95)';
+        handles.forEach((p,i)=>{ ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fill(); ctx.stroke(); ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.font='12px sans-serif'; ctx.fillText((i+1), p.x-4, p.y+4); ctx.fillStyle='rgba(29,209,161,0.95)'; });
+        if(handles.length===2){ ctx.beginPath(); ctx.moveTo(handles[0].x, handles[0].y); ctx.lineTo(handles[1].x, handles[1].y); ctx.stroke(); }
+      }
+
+      requestAnimationFrame(loop);
+    }
+
+    let lastSize = {w:0,h:0};
+    function resizeIfNeeded(){ const w=video.clientWidth,h=video.clientHeight; if(w!==lastSize.w||h!==lastSize.h){ lastSize={w,h}; resize(); } }
+
+    startCamera();
+  </script>
+</body>
+</html>
